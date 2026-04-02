@@ -1,0 +1,7 @@
+{
+    "python.defaultInterpreterPath": "D:\\program\\Anaconda\\envs\\uav_rsma\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "python.condaPath": "D:\\program\\Anaconda\\Scripts\\conda.exe",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}

@@ -1,0 +1,234 @@
+\documentclass[journal,onecolumn]{IEEEtran}
+
+% =========================================================
+% 宏包导入
+% =========================================================
+\usepackage[UTF8]{ctex}       % 核心：中文支持包
+\usepackage{cite}             % 参考文献引用
+\usepackage{amsmath,amssymb,amsfonts} % 数学公式支持
+\usepackage{algorithmic}      % 算法伪代码
+\usepackage{graphicx}         % 图片支持
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{bm}               % 粗体数学符号
+\usepackage{algorithm}        % 算法环境
+\usepackage{subfigure}        % 子图支持
+\usepackage{url}
+
+% =========================================================
+% 自定义数学命令
+% =========================================================
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert} % 范数符号 ||x||
+\newcommand{\herm}{H} % 共轭转置符号 H
+\newcommand{\trans}{T} % 转置符号 T
+\newcommand{\trace}{\text{Tr}} % 迹
+
+\begin{document}
+	
+	% =========================================================
+	% 论文标题
+	% =========================================================
+	\title{基于多分支架构 PPO 的无人机辅助\\ RSMA 网络能效优化轨迹与资源联合分配}
+	
+	% 作者信息
+	\author{ 
+	}
+	
+	\maketitle
+	
+	% =========================================================
+	% 摘要 (Abstract)
+	% =========================================================
+	\begin{abstract}
+		速率拆分多址接入（RSMA）与无人机（UAV）通信的结合被认为是提升未来 6G 网络覆盖与资源效率的关键技术。然而，在多天线 UAV 辅助的下行 RSMA 系统中，联合优化 UAV 轨迹、高维空间预编码矩阵及公共速率分配面临着动作空间维度爆炸和异构任务梯度干扰的挑战。针对这一问题，本文提出了一种符合 RSMA 物理机制的结构对齐深度强化学习框架——多分支近端策略优化算法（MB-PPO）。
+		首先，本文在三维空间中建立了基于均匀矩形阵列（URA）和莱斯衰落（Rician Fading）的空地信道模型，旨在最大化系统总能效（EE），同时满足每个用户的最低服务质量（QoS）速率约束。其次，为了解决传统单一输出头网络在处理异构动作时的不稳定性，本文重新设计了 Actor 网络架构，将其解耦为四个并行的任务分支：UAV 轨迹控制、公共流预编码、私有流预编码及公共速率份额分配。此外，引入了多头注意力机制（MHA）来捕获用户间的空域相关性，并设计了一种基于物理信息的硬映射层（Physics-Informed Mapping Layer），利用 Softmax 和$l_2$范数归一化确保系统 100% 满足发射功率约束。
+		仿真结果表明，所提出的 MB-PPO 算法在收敛速度和稳态性能上均显著优于传统的 MLP-PPO 算法。在用户聚集分布的挑战性场景下，MB-PPO 能够通过感知用户 QoS 差距灵活规划非规则航迹，相比于空间分割多址接入（SDMA）和固定轨迹方案，在显著提升系统能效的同时，能够有效保证用户间的公平性（Jain's Fairness Index）。
+	\end{abstract}
+	
+	\begin{IEEEkeywords}
+		无人机通信，速率分割多址接入（RSMA），能效优化，深度强化学习。
+	\end{IEEEkeywords}
+	
+	
+	
+	
+	\section{系统模型与问题建模}
+	\label{sec:system_model}
+	
+	本文考虑一个下行空地（Air-to-Ground, A2G）通信系统，其中部署了一架旋翼无人机（UAV）以为 $K$ 个单天线静止地面用户（Ground Users, GU）提供服务，用户集合记为 $\mathcal{K} = \{1, 2, \dots, K\}$。为了充分利用三维空间的自由度，UAV 搭载了包含 $M = N_x \times N_y$ 根天线的均匀矩形阵列（Uniform Rectangular Array, URA）。我们将总飞行任务时间 $T$ 离散化为 $N$ 个等长的时隙，即 $T = N \delta_t$，其中 $\delta_t$ 为时隙长度。假设信道经历块衰落（Block Fading），即在单个时隙内信道保持恒定，而在不同时隙间发生变化。
+	
+	\subsection{无人机运动学与能耗模型}
+	假设 UAV 在固定高度 $H$ 飞行。在第 $n$ 个时隙，UAV 的水平轨迹坐标记为 $\mathbf{q}[n] = [x[n], y[n]]^T \in \mathbb{R}^{2 \times 1}$。静止地面用户的位置已知且固定，记为 $\mathbf{w}_k = [x_k, y_k]^T, \forall k \in \mathcal{K}$。UAV 的飞行受限于其最大飞行速度 $V_{\max}$，其运动学更新方程可表示为：
+	\begin{align}
+		\mathbf{q}[n+1] &= \mathbf{q}[n] + \mathbf{v}[n] \delta_t, \quad \forall n \label{eq:kinematics} \\
+		||\mathbf{v}[n]|| &\leq V_{\max} \label{eq:v_max}
+	\end{align}
+	其中，$\mathbf{v}[n]$ 为 UAV 在时隙 $n$ 的水平速度矢量。
+	
+	对于旋翼无人机，其总能耗由通信能耗和推进能耗组成。根据经典的旋翼无人机能耗分析模型，推进功率 $P_{fly}$ 作为飞行速度 $V = ||\mathbf{v}[n]||$ 的函数可表示为：
+	\begin{equation}
+		P_{fly}(V) = P_0 \left(1 + \frac{3 V^2}{U_{tip}^2} \right) + P_i \left( \sqrt{1 + \frac{V^4}{4 v_0^4}} - \frac{V^2}{2 v_0^2} \right)^{\frac{1}{2}} + \frac{1}{2} d_0 \rho s A V^3
+		\label{eq:propulsion_power}
+	\end{equation}
+	其中，$P_0$ 和 $P_i$ 分别表示悬停状态下的桨叶型阻功率和诱导功率。其余参数（$U_{tip}, v_0, d_0, \rho, s, A$）均为与无人机空气动力学相关的常数。因此，UAV 在时隙 $n$ 的总能耗可表示为：
+	\begin{equation}
+		E_{tot}[n] = \left( P_{fly}(||\mathbf{v}[n]||) + P_{tx}[n] \right) \delta_t
+		\label{eq:total_energy}
+	\end{equation}
+	其中，$P_{tx}[n]$ 为时隙 $n$ 的总发射功率。
+	
+	\subsection{基于 URA 的空地莱斯信道模型}
+	在时隙 $n$，UAV 与第 $k$ 个用户之间的三维距离为 $d_k[n] = \sqrt{H^2 + ||\mathbf{q}[n] - \mathbf{w}_k||^2}$。由于 A2G 信道通常由视距（Line-of-Sight, LoS）链路主导，同时伴随非视距（NLoS）多径散射，本文采用莱斯（Rician）衰落信道模型。信道矢量 $\mathbf{h}_k[n] \in \mathbb{C}^{M \times 1}$ 建模为：
+	\begin{equation}
+		\mathbf{h}_k[n] = \sqrt{\beta_0 (d_k[n])^{-\alpha}} \left( \sqrt{\frac{K_R}{K_R+1}} \mathbf{a}(\phi_k[n], \theta_k[n]) + \sqrt{\frac{1}{K_R+1}} \mathbf{g}_k[n] \right)
+		\label{eq:channel}
+	\end{equation}
+	其中，$\beta_0$ 为参考距离处的信道增益，$\alpha$ 为路径损耗指数，$K_R$ 为莱斯因子。矢量 $\mathbf{g}_k[n] \sim \mathcal{CN}(\mathbf{0}, \mathbf{I}_M)$ 表示瑞利衰落分量。
+	
+	假设 UAV 在飞行过程中保持水平姿态稳定，URA 的导向矢量 $\mathbf{a}(\phi_k[n], \theta_k[n])$ 完全由几何关系决定。离开方位角（Azimuth AoD）$\phi_k[n]$ 和离开俯仰角（Elevation AoD）$\theta_k[n]$ 可计算为：
+	\begin{equation}
+		\phi_k[n] = \arctan \left( \frac{y_k - y[n]}{x_k - x[n]} \right), \quad \theta_k[n] = \arcsin \left( \frac{H}{d_k[n]} \right)
+		\label{eq:angles}
+	\end{equation}
+	此处arctan泛指考虑了四个象限的四象限反正切函数（Four-quadrant inverse tangent）。
+	
+	\subsection{RSMA 信号传输模型}
+	本文采用单层 RSMA（1-layer RSMA）传输方案。在时隙 $n$，基站将 $K$ 个用户的消息拆分并重新编码为一个公共流 $s_c[n]$ 和 $K$ 个私有流 $s_k[n]$。发射信号矢量 $\mathbf{x}[n] \in \mathbb{C}^{M \times 1}$ 表示为：
+	\begin{equation}
+		\mathbf{x}[n] = \mathbf{p}_c[n] s_c[n] + \sum_{k=1}^K \mathbf{p}_k[n] s_k[n]
+		\label{eq:transmit_signal}
+	\end{equation}
+	其中，$\mathbf{p}_c[n]$ 和 $\mathbf{p}_k[n]$ 分别为公共流和私有流的预编码矢量。总发射功率受限于最大功率约束，即 $P_{tx}[n] = ||\mathbf{p}_c[n]||^2 + \sum_{k=1}^K ||\mathbf{p}_k[n]||^2 \leq P_{\max}$。
+	
+	在接收端，假设发送端具备完美的瞬时信道状态信息（Perfect CSIT）且接收端能实现完美的串行干扰消除（Perfect SIC）。用户 $k$ 首先将所有私有流视为噪声来解码公共流 $s_c[n]$，其接收信号的信干噪比（SINR）为：
+	\begin{equation}
+		\gamma_{c,k}[n] = \frac{|\mathbf{h}_k^H[n] \mathbf{p}_c[n]|^2}{\sum_{j=1}^K |\mathbf{h}_k^H[n] \mathbf{p}_j[n]|^2 + \sigma^2}
+		\label{eq:sinr_c}
+	\end{equation}
+	其中 $\sigma^2$ 为加性高斯白噪声的功率。为了确保所有用户均能成功解码公共流，公共流的可达速率必须受限于信道条件最差的用户，即 $R_c[n] = \min_{k \in \mathcal{K}} \log_2(1 + \gamma_{c,k}[n])$。
+	
+	在成功解码并利用 SIC 消除公共流后，用户 $k$ 继续解码自身的私有流 $s_k[n]$，其 SINR 为：
+	\begin{equation}
+		\gamma_k[n] = \frac{|\mathbf{h}_k^H[n] \mathbf{p}_k[n]|^2}{\sum_{j \neq k}^K |\mathbf{h}_k^H[n] \mathbf{p}_j[n]|^2 + \sigma^2}
+		\label{eq:sinr_k}
+	\end{equation}
+	私有流的可达速率为 $R_k[n] = \log_2(1 + \gamma_k[n])$。设 $c_k[n]$ 为分配给用户 $k$ 的公共速率部分，其需满足 $\sum_{k=1}^K c_k[n] \leq R_c[n]$ 且 $c_k[n] \geq 0$。因此，用户 $k$ 在时隙 $n$ 的总可达速率为：
+	\begin{equation}
+		R_{k,tot}[n] = c_k[n] + R_k[n]
+		\label{eq:total_rate}
+	\end{equation}
+	
+	\subsection{优化问题构建}
+	本文的优化目标是联合设计 UAV 的飞行轨迹 $\mathbf{V} \triangleq \{\mathbf{v}[n]\}$、RSMA 预编码矢量 $\mathbf{P} \triangleq \{\mathbf{p}_c[n], \mathbf{p}_k[n]\}$ 以及公共速率分配策略 $\mathbf{C} \triangleq \{c_k[n]\}$，以最大化整个飞行任务期间系统的能效（Energy Efficiency, EE）。同时，通过设定最低服务质量（QoS）速率阈值来严格保证用户间的公平性。该优化问题可建模为：
+	\begin{align}
+		\text{(P1)}: \max_{\mathbf{V}, \mathbf{P}, \mathbf{C}} \quad & \eta_{EE} = \frac{\sum_{n=1}^N \sum_{k=1}^K R_{k,tot}[n]}{\sum_{n=1}^N \left( P_{fly}(||\mathbf{v}[n]||) + ||\mathbf{p}_c[n]||^2 + \sum_{k=1}^K ||\mathbf{p}_k[n]||^2 \right)} \label{eq:objective} \\
+		\text{s.t.} \quad 
+		& \text{(C1): } \mathbf{q}[n+1] = \mathbf{q}[n] + \mathbf{v}[n] \delta_t, \quad \forall n \tag{\ref{eq:objective}a} \\
+		& \text{(C2): } ||\mathbf{v}[n]|| \leq V_{\max}, \quad \forall n \tag{\ref{eq:objective}b} \\
+		& \text{(C3): } ||\mathbf{p}_c[n]||^2 + \sum_{k=1}^K ||\mathbf{p}_k[n]||^2 \leq P_{\max}, \quad \forall n \tag{\ref{eq:objective}c} \\
+		& \text{(C4): } \sum_{k=1}^K c_k[n] \leq \min_{j \in \mathcal{K}} \log_2(1 + \gamma_{c,j}[n]), \quad \forall n \tag{\ref{eq:objective}d} \\
+		& \text{(C5): } c_k[n] \geq 0, \quad \forall k, n \tag{\ref{eq:objective}e} \\
+		& \text{(C6): } R_{k,tot}[n] \geq R_{th}, \quad \forall k, n \tag{\ref{eq:objective}f}
+	\end{align}
+	
+	其中，约束 (C6) 通过保证每个用户的瞬时通信速率不低于阈值 $R_{th}$，显式地施加了公平性约束。由于目标函数呈分式形式，且三维空间轨迹与空域预编码矢量之间存在强烈的非线性耦合，加上严格的 QoS 约束，问题 (P1) 是一个高度非凸的非线性规划问题。传统的数学优化方法（如块坐标下降法或连续凸逼近）在求解此类问题时计算复杂度极高且难以避免近似误差。因此，在下一节中，我们将 (P1) 重新建模为马尔可夫决策过程（MDP），并提出一种新颖的多分支近端策略优化（MB-PPO）框架来高效求解该联合优化问题。
+	
+	
+	
+	\section{基于多分支深度强化学习的联合优化框架}
+	\label{sec:algorithm}
+	
+	由于原优化问题 (P1) 是一个非凸、强耦合且包含严格 QoS 约束的 MINLP 问题，传统的交替优化算法难以在多维连续空间中实现低复杂度求解。因此，本节将原问题重构为马尔可夫决策过程（MDP），并提出一种引入多头注意力机制（Multi-Head Attention, MHA）的新颖多分支近端策略优化（Multi-Branch Proximal Policy Optimization, MB-PPO）算法。该框架通过定制化的动作空间映射，严格保证了物理约束的满足，并有效消除了多维异构动作更新时的梯度干扰。
+	
+	\subsection{马尔可夫决策过程 (MDP) 建模}
+	MDP 由状态空间 $\mathcal{S}$、动作空间 $\mathcal{A}$ 和奖励函数 $\mathcal{R}$ 定义。在每个时隙 $n$，部署在 UAV 上的智能体观察当前状态 $s[n] \in \mathcal{S}$，采取动作 $a[n] \in \mathcal{A}$，并获得环境反馈的奖励 $r[n] \in \mathcal{R}$，同时状态转移至 $s[n+1]$。
+	
+	\subsubsection{状态空间设计 (State Space)}
+	为了使智能体能够感知时变的空地信道、UAV 空间位置以及用户的公平性需求，我们设计了一种包含“QoS 差距感知”的异构状态表示。定义针对用户 $k$ 的局部特征向量为 $\mathbf{o}_k[n]$，其包含：
+	1) 信道状态信息 (CSI)：将复数信道向量拆分为实部与虚部，即 $\Re(\mathbf{h}_k[n])$ 和 $\Im(\mathbf{h}_k[n])$。
+	2) 空间位置信息：UAV 当前二维坐标 $\mathbf{q}[n]$ 以及用户坐标 $\mathbf{w}_k$。
+	3) 公平性感知特征：为了引导网络向“饥饿”用户倾斜资源，引入上一时隙的可达速率 $R_{k,tot}[n-1]$ 以及当前的 QoS 差距 $\Delta R_k[n] = \max(0, R_{th} - R_{k,tot}[n-1])$。
+	因此，时隙 $n$ 的全局状态表示为所有用户特征的集合，即 $s[n] = \{ \mathbf{o}_1[n], \mathbf{o}_2[n], \dots, \mathbf{o}_K[n] \}$。
+	
+	\subsubsection{动作空间与物理约束映射 (Action Space and Constraint Mapping)}
+	为了解决不同物理量纲和约束条件带来的挑战，我们采用全连续动作空间，并通过确定的代数映射将神经网络输出域 $[-1, 1]$ 严格投影至可行域内。定义时隙 $n$ 的动作 $a[n]$ 包含以下四个子集：
+	\begin{itemize}
+		\item \textbf{UAV 运动控制}：网络输出 $a_v[n], a_\theta[n] \in [-1, 1]$。UAV 的飞行速度和航向角通过线性映射获得：
+		\begin{equation}
+			v[n] = \frac{V_{\max}}{2}(a_v[n] + 1), \quad \theta[n] = \pi(a_\theta[n] + 1)
+			\label{eq:action_traj}
+		\end{equation}
+		据此可计算二维速度向量 $\mathbf{v}[n] = [v[n]\cos\theta[n], v[n]\sin\theta[n]]^T$，严格满足约束 (C2)。
+		
+		\item \textbf{RSMA 预编码方向}：为了满足功率约束，我们将预编码拆分为方向和功率分配。网络输出公共流及 $K$ 个私有流的未归一化实数向量，将其重构为复数向量后进行 $\ell_2$ 范数归一化，得到单位方向矢量 $\mathbf{\bar{p}}_c[n], \mathbf{\bar{p}}_k[n] \in \mathbb{C}^{M \times 1}$，满足 $||\mathbf{\bar{p}}_c[n]|| = ||\mathbf{\bar{p}}_k[n]|| = 1$。
+		
+	
+		
+		    \item \textbf{RSMA 发射功率控制与分配}：在能效（EE）最大化问题中，始终以最大功率发射往往是次优的，因为过高的发射功率会带来严重的边际效用递减及簇间干扰。因此，本文引入了总功率缩放机制。网络在该分支输出 $K+2$ 维变量，其中第一个变量 $a_{\rho}[n] \in [-1, 1]$ 用于控制总发射功率大小，其余 $K+1$ 个变量用于控制功率分配比例。
+		
+		具体而言，总功率缩放因子 $\rho[n] \in [0, 1]$ 通过线性映射获得：$\rho[n] = \frac{1}{2}(a_{\rho}[n] + 1)$，此时实际总发射功率为 $P_{tx}[n] = \rho[n] P_{\max}$。其余 $K+1$ 个变量经过 Softmax 激活函数得到功率分配比例 $\alpha_c[n]$ 及 $\alpha_k[n]$，确保 $\alpha_c[n] + \sum_{k=1}^K \alpha_k[n] = 1$。最终的预编码矩阵重构为：
+		\begin{equation}
+			\mathbf{p}_c[n] = \sqrt{\rho[n] \alpha_c[n] P_{\max}} \mathbf{\bar{p}}_c[n], \quad \mathbf{p}_k[n] = \sqrt{\rho[n] \alpha_k[n] P_{\max}} \mathbf{\bar{p}}_k[n]
+			\label{eq:action_precoding}
+		\end{equation}
+		该映射不仅实现了一维“功率大小”与多维“功率分配”的完美解耦，赋予了智能体“按需发射、绿色节能”的自适应能力，同时也在数学上严格保证了发射功率约束 $P_{tx}[n] \leq P_{\max}$ (即约束 C3)。
+		
+		
+		
+		
+		
+		\item \textbf{速率分配}：网络输出 $K$ 维变量，通过 Softmax 激活得到速率分配比例 $\beta_k[n] \in [0, 1], \sum \beta_k[n] = 1$。公共流的分配速率为 $c_k[n] = \beta_k[n] R_c[n]$，严格满足约束 (C4) 和 (C5)。
+	\end{itemize}
+	
+	\subsubsection{奖励函数设计 (Reward Function)}
+	优化目标是在保障公平性的前提下最大化能效。因此，我们设计了一种融合瞬时能效与 QoS 惩罚项的全局奖励函数：
+	\begin{equation}
+		r[n] = \eta_{EE}[n] - \lambda \sum_{k=1}^K \max(0, R_{th} - R_{k,tot}[n])
+		\label{eq:reward}
+	\end{equation}
+	其中，$\eta_{EE}[n] = \frac{\sum_k R_{k,tot}[n]}{P_{fly}(||\mathbf{v}[n]||) + P_{tx}[n]}$ 为时隙 $n$ 的瞬时能效，$\lambda > 0$ 为惩罚系数。当某用户的可达速率低于 $R_{th}$ 时，环境将反馈负奖励以指导智能体调整预编码和速率分配策略；若所有用户均满足 QoS 要求，惩罚项为零。最大化长期累积奖励即等效于求解 (P1)。
+	
+	
+	
+	\subsubsection{基于拉格朗日对偶的自适应惩罚机制}
+	在式 (\ref{eq:reward}) 的奖励函数中，惩罚系数 $\lambda$ 的选取至关重要：若 $\lambda$ 过小，智能体倾向于牺牲公平性以换取高能效；若 $\lambda$ 过大，则会导致策略过于保守，陷入极低的次优解。为了避免启发式人工调参带来的不稳定性与局限性，本文将该硬约束优化问题建模为约束马尔可夫决策过程（Constrained MDP, CMDP），并采用原始-对偶（Primal-Dual）方法自适应地动态调整惩罚系数。
+	
+	具体而言，我们将 $\lambda$ 视为拉格朗日乘子（Lagrangian Multiplier）。在网络训练过程中，Actor 网络（原始变量）致力于最大化累积奖励，而 $\lambda$（对偶变量）则通过次梯度上升法（Subgradient Ascent）进行同步更新。在每个训练回合（Episode）或每个批次（Batch）结束后，$\lambda$ 的更新规则为：
+	\begin{equation}
+		\lambda \leftarrow \max \left( 0, \lambda + \alpha_\lambda \frac{1}{N} \sum_{n=1}^N \sum_{k=1}^K \left( R_{th} - R_{k,tot}[n] \right) \right)
+		\label{eq:lambda_update}
+	\end{equation}
+	其中，$\alpha_\lambda > 0$ 为对偶变量的学习率。
+	
+	该动态更新机制具有清晰的物理意义与理论保证：在训练初期，当策略极易违反 QoS 约束时，式 (\ref{eq:lambda_update}) 中的梯度项为正，$\lambda$ 迅速增大，迫使 Actor 网络优先学习满足用户的公平性需求；当智能体逐渐学会满足 QoS 约束时（即 $R_{k,tot}[n] \geq R_{th}$），梯度项为负，$\lambda$ 自动衰减并趋于稳定，从而赋予智能体更大的探索空间去全力优化系统能效。这种动态平衡机制不仅赋予了算法极强的场景普适性，也从理论上确保了所求解满足 KKT (Karush-Kuhn-Tucker) 约束条件。
+	
+	
+	
+	
+	
+	\subsection{具有注意力机制的多分支网络架构 (Multi-Branch Architecture)}
+	在处理多维耦合动作（如缓慢变化的无人机轨迹与快速变化的空域预编码）时，传统的单头 Actor 网络极易面临严重的梯度干扰（Gradient Interference）问题，导致策略难以收敛。为此，我们设计了具有对齐结构的多分支 Actor-Critic 架构。
+	
+	如图 X 所示（\textit{注：此处在论文中需配合网络架构图}），在 Actor 网络前端，我们将用户状态集合 $s[n]$ 输入多头注意力机制（MHA）层。MHA 能够通过计算注意力权重（Attention Scores），自适应地捕获不同用户的信道差异与 QoS 饥饿程度，并聚合为高维联合特征。
+	随后，特征经过共享的全连接层后，分化为 4 个独立的分支（Heads）：轨迹控制分支、预编码方向分支、功率分配分支和速率分配分支。每个分支独立输出对应连续动作分布的高斯均值（Mean）和标准差的对数（Log-Std）。这种“底层特征共享，顶层动作解耦”的设计，有效隔离了异构动作空间的梯度回传干扰。Critic 网络则采用单头结构，输出对全局状态的价值评估 $V(s[n])$。
+	
+	\subsection{MB-PPO 训练算法}
+	MB-PPO 基于 Actor-Critic 框架进行在线训练。定义 Actor 的策略为 $\pi_\theta(a|s)$，Critic 的价值函数为 $V_\phi(s)$。在每一轮训练中，智能体收集一批经验轨迹数据，并利用广义优势估计（GAE, Generalized Advantage Estimation）计算优势函数 $A^{\pi}[n]$。为了保证策略更新的单调递增并防止更新步长过大破坏稳定性，MB-PPO 采用裁剪的代理目标函数（Clipped Surrogate Objective）更新策略网络参数 $\theta$：
+	\begin{equation}
+		L^{CLIP}(\theta) = \mathbb{E} \left[ \min(r_t(\theta) A^{\pi}[n], \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) A^{\pi}[n]) \right]
+		\label{eq:ppo_clip}
+	\end{equation}
+	其中 $r_t(\theta) = \frac{\pi_\theta(a[n]|s[n])}{\pi_{\theta_{old}}(a[n]|s[n])}$ 为新旧策略的比率，$\epsilon$ 为裁剪超参数。Critic 网络参数 $\phi$ 则通过最小化价值预测均方误差进行更新。
+	
+	
+	\section{仿真实验}
+	MHA-MB-PPO与PPO对比
+    MHA-MB-PPO与其他算法的对比
+    rmsa换成sdma、noma
+    2D轨迹图
+    不同随机种子下算法的稳定性
+	不同用户数
+    把MHA去掉做对比实验
+	
+	
+\end{document}

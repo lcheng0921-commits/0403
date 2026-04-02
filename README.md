@@ -1,90 +1,104 @@
-# A Multi-Agent Collaboration Framework for Secure RSMA-Enabled Multi-UAV Networks
+# UAV-RSMA MB-PPO (Paper-Draft Focused)
 
-This is an an open implementation of our paper "A Multi-Agent Collaboration Framework for Secure RSMA-Enabled Multi-UAV Networks".
+This repository is now trimmed to the MB-PPO pipeline used for the paper draft workflow.
 
+Scope kept in code:
+- MB-PPO training/evaluation pipeline
+- RSMA-aware environment and physical mapping
+- baseline comparisons: `mbppo`, `single_head`, `circular`, `hover`, `sdma`
+- plotting and sweep scripts for draft figures
 
-## Required packages
+Legacy DRQN and old experiment folders were removed.
+
+## Environment Setup
+
+Create the conda environment:
 ```
 conda env create -f environment.yaml
-```
-We developed and tested only on Linux-based systems. In principle, it should also run on Windows, but there might be some compatibility issues. 
-
-
-
-## How to use
-
-**Note:**
-The `ltf` in the code is equal to the `FSF` in the paper, and the `nltf` is equal to the `CQF` in the paper. And pay attention to modify the absolute path in code.
-
-### 1. Clone
-```
-git clone https://github.com/jaxx2017/uav_rsma.git
-cd uav_rsma
+conda activate uav_rsma
 ```
 
-### 2. Create a Folder to Store Data
+Install GPU PyTorch (Windows example):
 ```
-mkdir mha_drqn_data
-```
-
-
-The relevant training data, such as 
-* `checkpoint`: Weight parameters saved during training.
-* `tensorboard-log`: Visualization of the training process: `tensorboard --logdir=pathname`
-* `config.json`: Hyperparameter configuration files. 
-* `other data`: Training return and test return.
-
-will be stored in `/uav_rsma/mha_drqn_data/exp x`. `x` is the number of experiments.
-
-### 3. Train
-The hyperparameter parameters are in `/algo/mha_multi_drqn/config.py`. The training procedure is run as follows：
-* exp1 (two-UAV) in Paper:
-```
-cd ./experiment/experiment3
-python main.py
-```
-* exp2 (four-UAV) in Paper:
-```
-cd ./experiment/experiment2
-python main.py
-```
-After the training is completed, the relevant data will be saved in `/uav_rsma/mha_drqn_data/exp x`.
-
-### 4. Test
-For exp1 (two-UAV) in Paper
-```
-cd ./experiment/experiment3
-```
-Modify the `config_path, test_ret_path, train_ret_path, model_path, test_kwargs` in file `test_policy.py`. Such as for the `config_path`
-```
-config_path = '/uav_rsma-master/mha_drqn_data/expx/config.json'
-```
-You need to modify `expx` to the folder where the training data is stored. Then modify parameter:
-* saveif: Whether to save the drawing？ `True` or `False`. If `True`, data will be saved in `./experiment/experiment3`.
-* fair_service: Is the service fair? `True` or `False`.
-```
-python test_policy.py
+pip install --index-url https://download.pytorch.org/whl/cu118 torch torchvision torchaudio
 ```
 
-### 5. Results Plot
-For exp1 (two-UAV) in Paper
+Quick check:
 ```
-cd ./experiment/experiment3
-```
-Parameters:
-* fair_service: Is the service fair? `True` or `False`.
-* save: Whether to save the drawing？ `True` or `False`.
-Then 
-```
-python draw.py
-```
-To draw a comparison between CQF and FSF, you need to run
-```
-python draw_compared.py
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-## Reference 
-If using this code for research purposes, please cite:
+## Train MB-PPO
+
+Default MB-PPO run:
 ```
-...
+python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 1000 --eval-interval 20 --save-freq 100
 ```
+
+With custom QoS and max power:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 400 --qos-threshold 0.6 --tx-power-max-dbm 28
+```
+
+With physical-mapping controls:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 400 --phy-mapping-blend 0.8 --precoding-gain-scale 1.2 --interference-scale 1.1
+```
+
+## Run Baselines
+
+Single-head PPO:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline single_head --episodes 1000
+```
+
+Circular trajectory:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline circular --episodes 1000
+```
+
+Hovering trajectory:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline hover --episodes 1000
+```
+
+SDMA mode:
+```
+python -m algo.mha_multi_drqn.run_mbppo --baseline sdma --episodes 1000
+```
+
+## Draw Figures
+
+Generate all target figures from `mb_ppo_data`:
+```
+python .\experiment\mb_ppo\draw.py
+```
+
+Use selected experiment ids:
+```
+python .\experiment\mb_ppo\draw.py --exp-ids 1 2 3
+```
+
+## Sweep Experiments
+
+Run compact sweeps:
+```
+python .\experiment\mb_ppo\sweep.py --mode both
+```
+
+Examples:
+```
+python .\experiment\mb_ppo\sweep.py --mode qos --baselines mbppo single_head sdma --qos-values 0.3 0.5 0.7 --episodes 200
+python .\experiment\mb_ppo\sweep.py --mode power --baselines mbppo single_head sdma --power-values 24 27 30 33 --episodes 200
+```
+
+## Output Structure
+
+Training outputs are stored in:
+- `mb_ppo_data/expX/config.json`
+- `mb_ppo_data/expX/checkpoints/`
+- `mb_ppo_data/expX/logs/`
+- `mb_ppo_data/expX/vars/`
+
+Draft figures are saved under:
+- `experiment/mb_ppo/pics/`

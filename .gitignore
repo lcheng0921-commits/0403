@@ -16,4 +16,11 @@ testnew_pc.py
 events*
 trace*
 
+# Python cache files
+__pycache__/
+*.pyc
+
+# MB-PPO experiment outputs
+mb_ppo_data/
+
 
