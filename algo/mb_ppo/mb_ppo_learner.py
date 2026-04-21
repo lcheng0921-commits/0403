@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from torch.optim import AdamW
 
-from algo.mha_mb_ppo.agents.mb_ppo_agent import MultiBranchActorCritic
+from algo.mb_ppo.agents.mb_ppo_agent import MultiBranchActorCritic
 
 
 class MultiBranchPPOLearner:
@@ -19,28 +19,38 @@ class MultiBranchPPOLearner:
         self.state_dim = env_info['state_shape']
 
         self.traj_dim = env_info.get('traj_dim', 2)
-        self.precoding_dim = env_info.get('precoding_dim', args.precoding_dim)
-        self.power_dim = env_info.get('power_dim', args.n_gts + 2)
-        self.rate_dim = env_info.get('rate_dim', args.n_gts)
+        antenna_count = int(env_info.get('antenna_count', getattr(args, 'antenna_count', 16)))
+        legacy_precoding_dim = int(env_info.get('precoding_dim', getattr(args, 'precoding_dim', 0)))
+
+        self.common_precoding_dim = int(env_info.get('common_precoding_dim', 2 * antenna_count))
+        self.private_precoding_dim = int(
+            env_info.get(
+                'private_precoding_dim',
+                max(0, legacy_precoding_dim - self.common_precoding_dim),
+            )
+        )
+        if self.private_precoding_dim <= 0:
+            self.private_precoding_dim = int(2 * self.n_gts * antenna_count)
+
+        self.resource_dim = int(
+            env_info.get(
+                'resource_dim',
+                int(env_info.get('power_dim', self.n_gts + 2)) + int(env_info.get('rate_dim', self.n_gts)),
+            )
+        )
 
         self.actor_critic = MultiBranchActorCritic(
             gt_features_dim=self.gt_features_dim,
             other_features_dim=self.other_features_dim,
             state_dim=self.state_dim,
             n_gts=self.n_gts,
-            n_heads=args.n_heads,
             n_layers=args.n_layers,
             hidden_size=args.hidden_size,
             traj_dim=self.traj_dim,
-            precoding_dim=self.precoding_dim,
-            csi_complex_dim=args.csi_complex_dim,
-            power_dim=self.power_dim,
-            rate_dim=self.rate_dim,
+            common_precoding_dim=self.common_precoding_dim,
+            private_precoding_dim=self.private_precoding_dim,
+            resource_dim=self.resource_dim,
             single_head=args.single_head,
-            use_mha=getattr(args, 'use_mha', True),
-            use_qos_guided_attention=args.use_qos_guided_attention,
-            qos_feature_index=args.qos_feature_index,
-            qos_attn_bias_scale=args.qos_attn_bias_scale,
         ).to(self.device)
 
         self.total_action_dim = self.actor_critic.total_action_dim
@@ -54,15 +64,20 @@ class MultiBranchPPOLearner:
         self.entropy_coef = args.entropy_coef
         self.value_coef = args.value_coef
 
-        self.lambda_penalty = float(args.lambda_init)
-        self.lambda_lr = float(args.lambda_lr)
+    def set_traj_branch_trainable(self, trainable: bool):
+        if self.actor_critic.single_head:
+            return
+
+        for p in self.actor_critic.traj_mean.parameters():
+            p.requires_grad = bool(trainable)
+        self.actor_critic.traj_log_std.requires_grad = bool(trainable)
 
     def _to_device_obs(self, obs):
         obs_other = obs[0].to(self.device).float()
         obs_gt = obs[1].to(self.device).float()
         return obs_other, obs_gt
 
-    def take_actions(self, obs, state, deterministic=False):
+    def take_actions(self, obs, state, deterministic=False, policy_branch='all'):
         obs_other, obs_gt = self._to_device_obs(obs)
         state = state.to(self.device).float()
 
@@ -71,6 +86,7 @@ class MultiBranchPPOLearner:
                 gt_features=obs_gt,
                 other_features=obs_other,
                 deterministic=deterministic,
+                policy_branch=policy_branch,
             )
             value = self.actor_critic.value(state).squeeze(0)
 
@@ -88,7 +104,7 @@ class MultiBranchPPOLearner:
             value = self.actor_critic.value(state).squeeze(0)
         return float(value.item())
 
-    def update(self, rollout_buffer):
+    def update(self, rollout_buffer, policy_branch='all'):
         data = rollout_buffer.as_tensors(self.device)
         obs_other = data['obs_other']
         obs_gt = data['obs_gt']
@@ -137,6 +153,7 @@ class MultiBranchPPOLearner:
                     gt_features=flat_obs_gt,
                     other_features=flat_obs_other,
                     action=flat_actions,
+                    policy_branch=policy_branch,
                 )
 
                 ratio = torch.exp(log_prob - flat_old_log_prob)
@@ -168,20 +185,14 @@ class MultiBranchPPOLearner:
             'LossCritic': float(np.mean(critic_loss_list)),
             'Entropy': float(np.mean(entropy_list)),
             'KL': float(np.mean(kl_list)),
+            'PolicyBranch': str(policy_branch),
         }
-
-    def update_lambda(self, mean_qos_signal):
-        # Standard dual ascent update: lambda <- [lambda + lr * g]_+
-        signal = float(mean_qos_signal)
-        self.lambda_penalty = float(max(0.0, self.lambda_penalty + self.lambda_lr * signal))
-        return self.lambda_penalty
 
     def save_model(self, path, stamp):
         checkpoint = dict()
         checkpoint.update(stamp)
         checkpoint['model_state_dict'] = self.actor_critic.state_dict()
         checkpoint['optimizer_state_dict'] = self.optimizer.state_dict()
-        checkpoint['lambda_penalty'] = self.lambda_penalty
         torch.save(checkpoint, path)
         print(f'Save checkpoint to {path}.')
 
@@ -189,6 +200,5 @@ class MultiBranchPPOLearner:
         checkpoint = torch.load(path, map_location=torch.device('cpu'))
         self.actor_critic.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.lambda_penalty = float(checkpoint.get('lambda_penalty', self.lambda_penalty))
         self.actor_critic.eval()
         print(f'Load checkpoint from {path}.')

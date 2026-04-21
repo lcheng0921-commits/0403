@@ -17,7 +17,6 @@ class RolloutBuffer:
         self.rewards = []
         self.dones = []
         self.values = []
-        self.qos_signals = []
 
         self.returns = None
         self.advantages = None
@@ -32,7 +31,6 @@ class RolloutBuffer:
         reward,
         done,
         value,
-        qos_violation,
     ):
         self.obs_other.append(obs_other.detach().cpu().float())
         self.obs_gt.append(obs_gt.detach().cpu().float())
@@ -43,7 +41,6 @@ class RolloutBuffer:
         self.rewards.append(float(reward))
         self.dones.append(bool(done))
         self.values.append(float(value))
-        self.qos_signals.append(float(qos_violation))
 
     def compute_returns_and_advantages(self, last_value=0.0):
         n_steps = len(self.rewards)
@@ -94,15 +91,6 @@ class RolloutBuffer:
 
         for start in range(0, len(indices), mini_batch_size):
             yield indices[start : start + mini_batch_size]
-
-    def mean_qos_violation(self):
-        if not self.qos_signals:
-            return 0.0
-        return float(np.mean(self.qos_signals))
-
-    def mean_qos_signal(self):
-        # Stored value is the dual-update signal collected during rollout.
-        return self.mean_qos_violation()
 
     def __len__(self):
         return len(self.rewards)

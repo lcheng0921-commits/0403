@@ -13,7 +13,7 @@ def _run_one(baseline: str, episodes: int, eval_interval: int, save_freq: int, s
     cmd = [
         sys.executable,
         '-m',
-        'algo.mha_mb_ppo.run_mbppo',
+        'algo.mb_ppo.run_mbppo',
         '--baseline',
         baseline,
         '--episodes',

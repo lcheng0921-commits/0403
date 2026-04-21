@@ -5,7 +5,7 @@ This repository is now trimmed to the MB-PPO pipeline used for the paper draft w
 Scope kept in code:
 - MB-PPO training/evaluation pipeline
 - RSMA-aware environment and physical mapping
-- baseline comparisons: `mbppo`, `single_head`, `circular`, `hover`, `sdma`
+- baseline comparisons: `mbppo`, `ppo`, `circular`, `hover`, `sdma`, `noma`
 - plotting and sweep scripts for draft figures
 
 Legacy DRQN and old experiment folders were removed.
@@ -32,39 +32,44 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available()); pr
 
 Default MB-PPO run:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 1000 --eval-interval 20 --save-freq 100
+python -m algo.mb_ppo.run_mbppo --baseline mbppo --episodes 1000 --eval-interval 20 --save-freq 100
 ```
 
 With custom QoS and max power:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 400 --qos-threshold 0.6 --tx-power-max-dbm 28
+python -m algo.mb_ppo.run_mbppo --baseline mbppo --episodes 400 --qos-threshold 0.6 --tx-power-max-dbm 28
 ```
 
 With physical-mapping controls:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline mbppo --episodes 400 --phy-mapping-blend 0.8 --precoding-gain-scale 1.2 --interference-scale 1.1
+python -m algo.mb_ppo.run_mbppo --baseline mbppo --episodes 400 --phy-mapping-blend 0.8 --precoding-gain-scale 1.2 --interference-scale 1.1
 ```
 
 ## Run Baselines
 
-Single-head PPO:
+PPO baseline:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline single_head --episodes 1000
+python -m algo.mb_ppo.run_mbppo --baseline ppo --episodes 1000
 ```
 
 Circular trajectory:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline circular --episodes 1000
+python -m algo.mb_ppo.run_mbppo --baseline circular --episodes 1000
 ```
 
 Hovering trajectory:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline hover --episodes 1000
+python -m algo.mb_ppo.run_mbppo --baseline hover --episodes 1000
 ```
 
 SDMA mode:
 ```
-python -m algo.mha_multi_drqn.run_mbppo --baseline sdma --episodes 1000
+python -m algo.mb_ppo.run_mbppo --baseline sdma --episodes 1000
+```
+
+NOMA mode:
+```
+python -m algo.mb_ppo.run_mbppo --baseline noma --episodes 1000
 ```
 
 ## Draw Figures
@@ -88,8 +93,8 @@ python .\experiment\mb_ppo\sweep.py --mode both
 
 Examples:
 ```
-python .\experiment\mb_ppo\sweep.py --mode qos --baselines mbppo single_head sdma --qos-values 0.3 0.5 0.7 --episodes 200
-python .\experiment\mb_ppo\sweep.py --mode power --baselines mbppo single_head sdma --power-values 24 27 30 33 --episodes 200
+python .\experiment\mb_ppo\sweep.py --mode qos --baselines mbppo ppo sdma --qos-values 0.3 0.5 0.7 --episodes 200
+python .\experiment\mb_ppo\sweep.py --mode power --baselines mbppo ppo sdma --power-values 24 27 30 33 --episodes 200
 ```
 
 ## Output Structure

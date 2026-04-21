@@ -129,6 +129,21 @@ def _extract_metric(rec: ExpRecord, key: str) -> np.ndarray:
     return np.zeros((0,), dtype=np.float32)
 
 
+def _extract_qos_violation_metric(rec: ExpRecord) -> np.ndarray:
+    # Prefer rollout-level QoS statistics first to align with lambda-update interpretation.
+    for k in [
+        "qos_violation_sum_rollout_mean",
+        "qos_violation_norm_rollout_mean",
+        "qos_violation_sq_sum",
+        "qos_violation_sum",
+        "qos_violation",
+    ]:
+        y = _extract_metric(rec, k)
+        if y.size > 0 and np.any(np.isfinite(y)):
+            return y
+    return np.zeros((0,), dtype=np.float32)
+
+
 def _make_panel(
     ax,
     x1: np.ndarray,
@@ -196,8 +211,8 @@ def main():
     y_ee_mbppo = _extract_metric(mbppo_rec, "energy_efficiency")
     y_ee_ppo = _extract_metric(ppo_rec, "energy_efficiency")
 
-    y_qos_mbppo = _extract_metric(mbppo_rec, "qos_violation")
-    y_qos_ppo = _extract_metric(ppo_rec, "qos_violation")
+    y_qos_mbppo = _extract_qos_violation_metric(mbppo_rec)
+    y_qos_ppo = _extract_qos_violation_metric(ppo_rec)
 
     y_lambda_mbppo = _extract_metric(mbppo_rec, "lambda_penalty")
     y_lambda_ppo = _extract_metric(ppo_rec, "lambda_penalty")
@@ -208,7 +223,7 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.5))
     axes = axes.reshape(-1)
 
-    label_mbppo = _prepare_label(mbppo_rec, "MHA-MB-PPO")
+    label_mbppo = _prepare_label(mbppo_rec, "MB-PPO")
     label_ppo = _prepare_label(ppo_rec, "PPO")
 
     _make_panel(
@@ -232,7 +247,7 @@ def main():
         label_mbppo,
         label_ppo,
         "QoS Violation vs Episode",
-        "QoS violation",
+        "QoS violation amount",
         smooth_window=args.smooth_window,
     )
     _make_panel(
@@ -260,7 +275,7 @@ def main():
         smooth_window=args.smooth_window,
     )
 
-    fig.suptitle("Convergence Comparison: MHA-MB-PPO vs PPO", fontsize=13)
+    fig.suptitle("Convergence Comparison: MB-PPO vs PPO", fontsize=13)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
 
     save_path = Path(args.save_path)

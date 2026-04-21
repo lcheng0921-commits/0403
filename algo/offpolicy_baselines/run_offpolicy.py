@@ -1,7 +1,9 @@
 import copy
+import json
+import re
 from pathlib import Path
 from types import SimpleNamespace as SN
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -40,12 +42,12 @@ except Exception:
             def close(self):
                 pass
 
-from algo.mha_mb_ppo.mb_ppo_config import DEFAULT_MB_PPO_CONFIG
-from algo.mha_mb_ppo.utils import check_args_sanity, save_config, save_var, set_rand_seed
+from algo.mb_ppo.mb_ppo_config import DEFAULT_MB_PPO_CONFIG
+from algo.mb_ppo.utils import check_args_sanity, load_var, save_config, save_var, set_rand_seed
 from mb_ppo_env.mb_ppo_environment import MbPpoEnv
 
 
-def _create_output_dir(repo_root: Path, requested_output_dir: str = '') -> Path:
+def _create_output_dir(repo_root: Path, requested_output_dir: str = '', allow_resume: bool = False) -> Path:
     data_root = repo_root / 'mb_ppo_data'
     data_root.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +55,7 @@ def _create_output_dir(repo_root: Path, requested_output_dir: str = '') -> Path:
         exp_dir = Path(requested_output_dir)
         if not exp_dir.is_absolute():
             exp_dir = repo_root / requested_output_dir
-        if exp_dir.exists() and (exp_dir / 'config.json').exists():
+        if exp_dir.exists() and (exp_dir / 'config.json').exists() and not allow_resume:
             raise RuntimeError(f'Requested output directory already contains an experiment: {exp_dir}')
         (exp_dir / 'checkpoints').mkdir(parents=True, exist_ok=True)
         (exp_dir / 'logs').mkdir(parents=True, exist_ok=True)
@@ -75,6 +77,77 @@ def _create_output_dir(repo_root: Path, requested_output_dir: str = '') -> Path:
     raise RuntimeError('No available experiment directory under mb_ppo_data.')
 
 
+def _load_json_dict(path: Path) -> Dict:
+    if not path.exists():
+        return {}
+    with path.open('r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_checkpoint_episode(path: Path) -> int:
+    m = re.search(r'checkpoint_episode(\d+)\.zip$', path.name)
+    return int(m.group(1)) if m else -1
+
+
+def _find_latest_checkpoint(checkpoint_dir: Path) -> Tuple[Optional[Path], int]:
+    latest_path = None
+    latest_ep = -1
+    if not checkpoint_dir.exists():
+        return None, -1
+
+    for p in checkpoint_dir.glob('checkpoint_episode*.zip'):
+        ep = _extract_checkpoint_episode(p)
+        if ep > latest_ep:
+            latest_ep = ep
+            latest_path = p
+
+    return latest_path, latest_ep
+
+
+def _safe_load_var(path_without_ext: Path, default_value):
+    try:
+        return load_var(str(path_without_ext))
+    except Exception:
+        return default_value
+
+
+def _verify_resume_config(existing: Dict, expected: Dict):
+    keys = [
+        'baseline',
+        'seed',
+        'qos_threshold',
+        'paper_fixed_qos_threshold',
+        'enforce_fixed_qos_threshold',
+        'reward_ee_scale',
+        'reward_qos_scale',
+        'reward_power_penalty_scale',
+        'lambda_lr',
+        'lambda_max',
+        'antenna_count',
+        'precoding_dim',
+    ]
+
+    mismatches = []
+    for k in keys:
+        if k not in existing or k not in expected:
+            continue
+        a = existing[k]
+        b = expected[k]
+        if isinstance(a, float) or isinstance(b, float):
+            if abs(float(a) - float(b)) > 1e-9:
+                mismatches.append((k, a, b))
+        else:
+            if a != b:
+                mismatches.append((k, a, b))
+
+    if mismatches:
+        lines = ['Resume config mismatch detected:']
+        for k, a, b in mismatches:
+            lines.append(f'  - {k}: existing={a}, expected={b}')
+        raise RuntimeError('\n'.join(lines))
+
+
 def _build_env_kwargs(args: SN) -> Dict:
     return {
         'map': args.map,
@@ -86,7 +159,6 @@ def _build_env_kwargs(args: SN) -> Dict:
         'n_moves': args.n_moves,
         'n_gts': args.n_gts,
         'n_eve': args.n_eve,
-        'r_cov': args.r_cov,
         'r_sense': args.r_sense,
         'n_community': args.n_community,
         'K_richan': args.K_richan,
@@ -96,7 +168,13 @@ def _build_env_kwargs(args: SN) -> Dict:
         'tx_power_max_dbm': args.tx_power_max_dbm,
         'reward_ee_scale': args.reward_ee_scale,
         'reward_qos_scale': args.reward_qos_scale,
+        'reward_power_penalty_scale': args.reward_power_penalty_scale,
+        'reward_wall_penalty_scale': args.reward_wall_penalty_scale,
+        'reward_core_penalty_scale': args.reward_core_penalty_scale,
         'lambda_penalty': args.lambda_init,
+        'lambda_decay_gate_ratio': args.lambda_decay_gate_ratio,
+        'lambda_decay_offset': args.lambda_decay_offset,
+        'lambda_signal_aggregation': args.lambda_signal_aggregation,
         'rsma_mode': args.rsma_mode,
         'baseline': args.baseline,
         'precoding_dim': args.precoding_dim,
@@ -107,6 +185,22 @@ def _build_env_kwargs(args: SN) -> Dict:
         'phy_mapping_blend': args.phy_mapping_blend,
         'precoding_gain_scale': args.precoding_gain_scale,
         'interference_scale': args.interference_scale,
+        'state_h_scale': args.state_h_scale,
+        'alpha_common_logit_bias': args.alpha_common_logit_bias,
+        'pfg_guidance_weight': args.pfg_guidance_weight,
+        'qos_warmup_episodes': args.qos_warmup_episodes,
+        'qos_warmup_start_scale': args.qos_warmup_start_scale,
+        'pfg_quadratic_warmup_episodes': args.pfg_quadratic_warmup_episodes,
+        'pfg_quadratic_dist_scale': args.pfg_quadratic_dist_scale,
+        'core_boundary_margin_ratio': args.core_boundary_margin_ratio,
+        'terminate_on_core_violation': args.terminate_on_core_violation,
+        'core_violation_terminate_patience': args.core_violation_terminate_patience,
+        'core_violation_terminate_threshold': args.core_violation_terminate_threshold,
+        'core_terminate_start_episode': args.core_terminate_start_episode,
+        'core_penalty_warmup_episodes': args.core_penalty_warmup_episodes,
+        'core_penalty_start_scale': args.core_penalty_start_scale,
+        'distance_shaping_weight': args.distance_shaping_weight,
+        'distance_shaping_warmup_episodes': args.distance_shaping_warmup_episodes,
     }
 
 
@@ -212,28 +306,50 @@ class Sb3MbPpoEnv(gym.Env):
 
 
 class EpisodeMetricsCallback(BaseCallback):
-    def __init__(self, writer, lambda_init: float, lambda_lr: float, qos_threshold: float):
+    def __init__(self, writer, lambda_init: float, lambda_lr: float, qos_threshold: float, lambda_max: float):
         super().__init__()
         self.writer = writer
         self.lambda_penalty = float(lambda_init)
         self.lambda_lr = float(lambda_lr)
+        self.lambda_max = float(lambda_max)
         self.qos_threshold = float(max(1e-6, qos_threshold))
 
         self.episodes_done = 0
         self.train_returns = []
         self.episode_metrics = []
-        self._qos_dual_signal_sum = None
+        self._lambda_signal_sum = None
         self._qos_steps = None
+
+    def _sync_lambda_to_env(self):
+        if hasattr(self.training_env, 'set_attr'):
+            self.training_env.set_attr('lambda_penalty', self.lambda_penalty)
+            return
+
+        if hasattr(self.training_env, 'envs'):
+            for env in self.training_env.envs:
+                setattr(env, 'lambda_penalty', self.lambda_penalty)
+                if hasattr(env, 'set_lambda'):
+                    env.set_lambda(self.lambda_penalty)
+            return
+
+        setattr(self.training_env, 'lambda_penalty', self.lambda_penalty)
+        if hasattr(self.training_env, 'set_lambda'):
+            self.training_env.set_lambda(self.lambda_penalty)
 
     def _on_training_start(self) -> None:
         n_envs = int(getattr(self.training_env, 'num_envs', 1))
-        self._qos_dual_signal_sum = np.zeros(n_envs, dtype=np.float32)
+        self._lambda_signal_sum = np.zeros(n_envs, dtype=np.float32)
         self._qos_steps = np.zeros(n_envs, dtype=np.int32)
-        self.training_env.set_attr('lambda_penalty', self.lambda_penalty)
+        self._sync_lambda_to_env()
 
     def _on_step(self) -> bool:
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
+
+        if isinstance(infos, dict):
+            infos = [infos]
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
 
         for idx, done in enumerate(dones):
             info = infos[idx] if idx < len(infos) else {}
@@ -244,8 +360,10 @@ class EpisodeMetricsCallback(BaseCallback):
             qos_gap_norm = float(info.get('qos_violation_norm', qos_gap / self.qos_threshold))
             qos_dual_norm = float(info.get('qos_dual_signal_norm', qos_dual / self.qos_threshold))
 
-            if self._qos_dual_signal_sum is not None and idx < len(self._qos_dual_signal_sum):
-                self._qos_dual_signal_sum[idx] += qos_dual_sum
+            lambda_signal_step = float(np.clip(info.get('qos_dual_signal_norm_for_lambda', qos_dual_norm), -1.0, 1.0))
+
+            if self._lambda_signal_sum is not None and idx < len(self._lambda_signal_sum):
+                self._lambda_signal_sum[idx] += lambda_signal_step
                 self._qos_steps[idx] += 1
 
             if not done:
@@ -256,14 +374,22 @@ class EpisodeMetricsCallback(BaseCallback):
             ep_return = float(np.mean(np.asarray(ep_raw, dtype=np.float32)))
 
             ep_qos_dual_signal = qos_dual_sum
-            if self._qos_dual_signal_sum is not None and idx < len(self._qos_dual_signal_sum):
+            ep_lambda_signal = lambda_signal_step
+            if self._lambda_signal_sum is not None and idx < len(self._lambda_signal_sum):
                 steps = int(max(1, self._qos_steps[idx]))
-                ep_qos_dual_signal = float(self._qos_dual_signal_sum[idx] / steps)
-                self._qos_dual_signal_sum[idx] = 0.0
+                ep_lambda_signal = float(self._lambda_signal_sum[idx] / steps)
+                self._lambda_signal_sum[idx] = 0.0
                 self._qos_steps[idx] = 0
 
-            self.lambda_penalty = max(0.0, self.lambda_penalty + self.lambda_lr * ep_qos_dual_signal)
-            self.training_env.set_attr('lambda_penalty', self.lambda_penalty)
+            # Keep update identical to MB-PPO learner: clip signal to [-1, 1], clip lambda to [0, lambda_max].
+            self.lambda_penalty = float(
+                np.clip(
+                    self.lambda_penalty + self.lambda_lr * float(np.clip(ep_lambda_signal, -1.0, 1.0)),
+                    0.0,
+                    self.lambda_max,
+                )
+            )
+            self._sync_lambda_to_env()
 
             self.episodes_done += 1
             self.train_returns.append(ep_return)
@@ -278,6 +404,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 'qos_dual_signal_sum': qos_dual_sum,
                 'qos_dual_signal_norm': qos_dual_norm,
                 'episode_qos_dual_signal': ep_qos_dual_signal,
+                'episode_lambda_signal': ep_lambda_signal,
                 'weighted_qos_gap': float(info.get('weighted_qos_gap', 0.0)),
                 'weighted_qos_gap_norm': float(info.get('weighted_qos_gap_norm', qos_gap_norm)),
                 'energy_efficiency': float(info.get('energy_efficiency', 0.0)),
@@ -306,6 +433,7 @@ class EpisodeMetricsCallback(BaseCallback):
             self.writer.add_scalar('train/qos_dual_signal_sum', qos_dual_sum, self.episodes_done)
             self.writer.add_scalar('train/qos_dual_signal_norm', qos_dual_norm, self.episodes_done)
             self.writer.add_scalar('train/episode_qos_dual_signal', ep_qos_dual_signal, self.episodes_done)
+            self.writer.add_scalar('train/episode_lambda_signal', ep_lambda_signal, self.episodes_done)
             self.writer.add_scalar('train/energy_efficiency', metrics['energy_efficiency'], self.episodes_done)
             self.writer.add_scalar('train/fairness', metrics['effective_fairness'], self.episodes_done)
 
@@ -428,9 +556,14 @@ def _save_training_vars(output_dir: Path, callback: EpisodeMetricsCallback, eval
 
 def train_offpolicy(algo: str, train_kwargs=None):
     train_kwargs = train_kwargs or {}
+    resume = bool(train_kwargs.get('resume', False))
 
     repo_root = Path(__file__).resolve().parents[2]
-    output_dir = _create_output_dir(repo_root, requested_output_dir=train_kwargs.get('output_dir', ''))
+    output_dir = _create_output_dir(
+        repo_root,
+        requested_output_dir=train_kwargs.get('output_dir', ''),
+        allow_resume=resume,
+    )
 
     config = copy.deepcopy(DEFAULT_MB_PPO_CONFIG)
     config.update(train_kwargs)
@@ -445,7 +578,15 @@ def train_offpolicy(algo: str, train_kwargs=None):
     args.output_dir = str(output_dir)
     args = check_args_sanity(args)
 
-    save_config(output_dir=args.output_dir, config=args.__dict__)
+    config_path = output_dir / 'config.json'
+    if resume:
+        if not config_path.exists():
+            raise RuntimeError(f'Cannot resume because config does not exist: {config_path}')
+        existing_cfg = _load_json_dict(config_path)
+        _verify_resume_config(existing_cfg, args.__dict__)
+    else:
+        save_config(output_dir=args.output_dir, config=args.__dict__)
+
     set_rand_seed(args.seed)
 
     env_kwargs = _build_env_kwargs(args)
@@ -458,6 +599,7 @@ def train_offpolicy(algo: str, train_kwargs=None):
         lambda_init=args.lambda_init,
         lambda_lr=args.lambda_lr,
         qos_threshold=args.qos_threshold,
+        lambda_max=args.lambda_max,
     )
 
     model = _build_model(algo=algo, env=train_env, args=args)
@@ -470,8 +612,41 @@ def train_offpolicy(algo: str, train_kwargs=None):
     eval_history = []
     eval_traces = []
 
-    next_eval = eval_interval
-    next_save = save_freq
+    if resume:
+        callback.train_returns = _safe_load_var(output_dir / 'vars' / 'train_returns', [])
+        callback.episode_metrics = _safe_load_var(output_dir / 'vars' / 'episode_metrics', [])
+        eval_history = _safe_load_var(output_dir / 'vars' / 'eval_history', [])
+        eval_traces = _safe_load_var(output_dir / 'vars' / 'eval_traces', [])
+
+        callback.episodes_done = int(len(callback.train_returns))
+        if callback.episode_metrics:
+            callback.lambda_penalty = float(callback.episode_metrics[-1].get('lambda_penalty', callback.lambda_penalty))
+
+        checkpoint_path, checkpoint_ep = _find_latest_checkpoint(output_dir / 'checkpoints')
+        if checkpoint_path is None or checkpoint_ep < 0:
+            raise RuntimeError(f'Cannot resume because no checkpoint was found in {output_dir / "checkpoints"}')
+
+        if algo == 'sac':
+            model = SAC.load(str(checkpoint_path), env=train_env, device=args.device)
+        elif algo == 'td3':
+            model = TD3.load(str(checkpoint_path), env=train_env, device=args.device)
+        else:
+            raise ValueError(f'Unsupported algorithm: {algo}')
+
+        if checkpoint_ep > callback.episodes_done:
+            # In case metrics were not flushed at interruption, trust checkpoint episode index.
+            callback.episodes_done = int(checkpoint_ep)
+
+        setattr(train_env, 'lambda_penalty', callback.lambda_penalty)
+        train_env.set_lambda(callback.lambda_penalty)
+        eval_env.set_lambda(callback.lambda_penalty)
+        print(
+            f'[Resume] Loaded {algo.upper()} checkpoint={checkpoint_path.name}, '
+            f'episodes_done={callback.episodes_done}, lambda={callback.lambda_penalty:.4f}'
+        )
+
+    next_eval = ((callback.episodes_done // eval_interval) + 1) * eval_interval
+    next_save = ((callback.episodes_done // save_freq) + 1) * save_freq
 
     while callback.episodes_done < total_episodes:
         target_episode = min(total_episodes, next_eval)
@@ -555,16 +730,23 @@ def build_train_kwargs_from_cli(cli_args):
         'seed': cli_args.seed,
         'lambda_init': cli_args.lambda_init,
         'lambda_lr': cli_args.lambda_lr,
+        'lambda_max': cli_args.lambda_max,
         'qos_threshold': cli_args.qos_threshold,
         'paper_fixed_qos_threshold': cli_args.paper_fixed_rth,
         'enforce_fixed_qos_threshold': not cli_args.disable_fixed_rth,
         'tx_power_max_dbm': cli_args.tx_power_max_dbm,
+        'reward_ee_scale': cli_args.reward_ee_scale,
+        'reward_qos_scale': cli_args.reward_qos_scale,
+        'reward_power_penalty_scale': cli_args.reward_power_penalty_scale,
+        'lambda_decay_gate_ratio': cli_args.lambda_decay_gate_ratio,
+        'lambda_decay_offset': cli_args.lambda_decay_offset,
         'phy_mapping_blend': cli_args.phy_mapping_blend,
         'precoding_gain_scale': cli_args.precoding_gain_scale,
         'interference_scale': cli_args.interference_scale,
         'antenna_count': cli_args.antenna_count,
         'csi_complex_dim': cli_args.csi_complex_dim,
         'save_episode_metrics': not cli_args.no_save_episode_metrics,
+        'resume': cli_args.resume,
     }
 
 
@@ -579,17 +761,24 @@ def main():
     parser.add_argument('--seed', type=int, default=10, help='Random seed.')
     parser.add_argument('--lambda-init', type=float, default=0.1, help='Initial dual variable value.')
     parser.add_argument('--lambda-lr', type=float, default=DEFAULT_MB_PPO_CONFIG['lambda_lr'], help='Dual update step size for lambda.')
+    parser.add_argument('--lambda-max', type=float, default=DEFAULT_MB_PPO_CONFIG['lambda_max'], help='Hard upper bound of lambda penalty.')
     parser.add_argument('--output-dir', type=str, default='', help='Optional explicit output directory (absolute or repo-relative).')
     parser.add_argument('--qos-threshold', type=float, default=0.1, help='Requested QoS threshold; ignored when fixed R_th is enabled.')
     parser.add_argument('--paper-fixed-rth', type=float, default=DEFAULT_MB_PPO_CONFIG['paper_fixed_qos_threshold'], help='Fixed paper R_th used when fixed mode is enabled.')
     parser.add_argument('--disable-fixed-rth', action='store_true', help='Disable fixed R_th enforcement and use --qos-threshold directly.')
     parser.add_argument('--tx-power-max-dbm', type=float, default=30.0, help='Maximum transmit power in dBm.')
+    parser.add_argument('--reward-ee-scale', type=float, default=DEFAULT_MB_PPO_CONFIG['reward_ee_scale'], help='Energy-efficiency reward scale (env applies internal 1000x amplification).')
+    parser.add_argument('--reward-qos-scale', type=float, default=DEFAULT_MB_PPO_CONFIG['reward_qos_scale'], help='QoS squared-gap penalty coefficient.')
+    parser.add_argument('--reward-power-penalty-scale', type=float, default=DEFAULT_MB_PPO_CONFIG['reward_power_penalty_scale'], help='TX power violation penalty coefficient.')
+    parser.add_argument('--lambda-decay-gate-ratio', type=float, default=DEFAULT_MB_PPO_CONFIG['lambda_decay_gate_ratio'], help='Deprecated compatibility argument. Ignored by the current unbiased lambda-update signal.')
+    parser.add_argument('--lambda-decay-offset', type=float, default=DEFAULT_MB_PPO_CONFIG['lambda_decay_offset'], help='Deprecated compatibility argument. Ignored by the current unbiased lambda-update signal.')
     parser.add_argument('--phy-mapping-blend', type=float, default=0.7, help='Blend ratio between base and mapped rates.')
     parser.add_argument('--precoding-gain-scale', type=float, default=1.0, help='Gain scaling in physical mapping.')
     parser.add_argument('--interference-scale', type=float, default=1.0, help='Interference scaling in physical mapping.')
     parser.add_argument('--antenna-count', type=int, default=DEFAULT_MB_PPO_CONFIG['antenna_count'], help='Number of transmit antennas used for beam-direction mapping.')
     parser.add_argument('--csi-complex-dim', type=int, default=4, help='Per-user CSI complex dimension for observation.')
     parser.add_argument('--no-save-episode-metrics', action='store_true', help='Disable saving per-episode metric files.')
+    parser.add_argument('--resume', action='store_true', help='Resume from the latest checkpoint in --output-dir.')
     cli_args = parser.parse_args()
 
     kwargs = build_train_kwargs_from_cli(cli_args)
